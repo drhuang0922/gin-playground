@@ -3,15 +3,17 @@ package main
 import (
 	"fmt"
 	"net/http"
+
+	"github.com/gorilla/mux"
 )
 
 func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "playground web server")
-	})
+	r := mux.NewRouter()
+	r.HandleFunc("/api/v1/health", HealthHandler).Methods("GET")
+	r.HandleFunc("/api/v1/health", HealthHandler).Methods("POST")
+	http.ListenAndServe(":8080", r)
+}
 
-	fs := http.FileServer(http.Dir("static/"))
-	http.Handle("/static/", http.StripPrefix("/static/", fs))
-
-	http.ListenAndServe(":80", nil)
+func HealthHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Fprintf(w, "OK")
 }
