@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Graph Viewer</title>
+    <script src="/static/js/htmx.min.js"></script>
+    <style>
+      body {
+        font-family: sans-serif;
+        background: #eee;
+        padding: 2rem;
+      }
+
+      .controls {
+        text-align: center;
+        margin-bottom: 1rem;
+      }
+
+      .graph-container {
+        position: relative;
+        width: 100%; /* Use full width of parent */
+        max-width: 1200px; /* Maximum width on large screens */
+        height: auto; /* Auto height based on content */
+        min-height: 550px; /* Minimum height */
+        margin: 0 auto; /* Center in page */
+        border: 1px solid #ccc;
+        background: white;
+        transition: all 0.3s ease;
+        overflow: auto; /* Allow scrolling if graph is larger than viewport */
+      }
+
+      /* Add media queries for better mobile experience */
+      @media (max-width: 768px) {
+        .graph-container {
+          min-height: 450px;
+          border-radius: 8px;
+        }
+        
+        .controls {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+        }
+        
+        .upload-label {
+          margin-bottom: 10px;
+        }
+      }
+
+      @media (max-width: 480px) {
+        body {
+          padding: 1rem;
+        }
+        
+        .graph-container {
+          min-height: 350px;
+        }
+        
+        .node {
+          /* Slightly smaller nodes on mobile */
+          transform-origin: center;
+        }
+      }
+
+      /* Add container for scaling */
+      #graph {
+        position: relative;
+        height: 100%;
+        transform-origin: top left;
+      }
+
+      .node {
+        position: absolute;
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        background: #4a90e2;
+        color: white;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: transform 0.2s;
+        z-index: 2;
+        box-sizing: border-box;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-weight: bold;
+        padding: 0 2px;
+      }
+
+      .node:hover {
+        transform: scale(1.1);
+        background: #357abd;
+      }
+
+      .node.level-3 {
+        box-shadow: 0 0 12px #ff4757; /* Glow effect for level 3 */
+        z-index: 4; /* Make level 3 nodes appear above others */
+      }
+
+      .node.level-2 {
+        box-shadow: 0 0 8px #ffa502; /* Subtle glow for level 2 */
+        z-index: 3; /* Make level 2 nodes appear above level 1 */
+      }
+
+      .node.level-1 {
+        z-index: 2; /* Base z-index for normal nodes */
+      }
+
+      .node.security-3 {
+        box-shadow: 0 0 12px #ff4757; /* Glow effect for security level 3 */
+        z-index: 4; /* Make security level 3 nodes appear above others */
+      }
+
+      .node.security-2 {
+        box-shadow: 0 0 8px #ffa502; /* Subtle glow for security level 2 */
+        z-index: 3; /* Make security level 2 nodes appear above level 1 */
+      }
+
+      .node.security-1 {
+        z-index: 2; /* Base z-index for normal nodes */
+      }
+
+      .edge {
+        position: absolute;
+        height: 2px;
+        background-color: #888;
+        transform-origin: 0 0;
+        z-index: 1;
+      }
+
+      .node-details {
+        margin-top: 1rem;
+        text-align: center;
+      }
+
+      .upload-label {
+        display: inline-block;
+        padding: 8px 16px;
+        background: #4a90e2;
+        color: white;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-right: 10px;
+      }
+
+      .upload-label:hover {
+        background: #357abd;
+      }
+
+      #fileName {
+        font-style: italic;
+      }
+
+      .htmx-indicator {
+        display: none;
+        padding: 8px 12px;
+        background: #f8f9fa;
+        border-radius: 4px;
+        margin-left: 10px;
+        align-items: center;
+      }
+
+      .htmx-request .htmx-indicator {
+        display: inline-flex;
+      }
+
+      .spinner {
+        display: inline-block;
+        width: 18px;
+        height: 18px;
+        border: 2px solid rgba(0, 0, 0, 0.1);
+        border-left-color: #4a90e2;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+        margin-right: 8px;
+      }
+
+      @keyframes spin {
+        to { transform: rotate(360deg); }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="controls">
+      <form id="uploadForm"
+            hx-encoding="multipart/form-data"
+            hx-post="/upload"
+            hx-target="#graph-container"
+            hx-indicator="#loading-indicator"
+            hx-swap="outerHTML">
+        <label for="jsonInput" class="upload-label">Choose JSON File</label>
+        <input
+          type="file"
+          id="jsonInput"
+          name="jsonFile"
+          accept="application/json"
+          style="display: none"
+          onchange="this.form.requestSubmit()"
+        />
+        <span id="fileName">No file selected</span>
+        <div id="loading-indicator" class="htmx-indicator">
+          <div class="spinner"></div> Processing...
+        </div>
+      </form>
+    </div>
+
+    <div class="graph-container" id="graph-container">
+      <div id="graph"></div>
+    </div>
+
+    <div class="node-details" id="details">
+      <p>Select a JSON file to visualize the graph.</p>
+    </div>
+
+    <script>
+      let nodesMap = {};
+      let edgesList = [];
+
+      // Reset any previous transforms
+      document.getElementById("graph").style.transform = "scale(1)";
+
+      // Replace the existing htmx:afterSwap handler
+      document.addEventListener('htmx:afterSwap', function(event) {
+        console.log("HTMX swap completed", event.detail);
+        
+        // If graph data is available after a swap
+        if (window.graphData) {
+          console.log("Found graph data, rendering...");
+          renderGraph(window.graphData);
+          window.graphData = null; // Clear it after use
+        }
+      });
+
+      // Add this to monitor HTMX requests for debugging
+      document.addEventListener('htmx:beforeRequest', function(event) {
+        console.log("HTMX request starting", event.detail);
+      });
+
+      document.addEventListener('htmx:responseError', function(event) {
+        console.error("HTMX response error", event.detail);
+      });
+
+      // Update file name display when file selected
+      document.getElementById('jsonInput').addEventListener('change', function() {
+        document.getElementById('fileName').textContent = this.files[0]?.name || 'No file selected';
+      });
+
+      // Add this function to calculate and set container size based on node positions
+      function adjustContainerSize() {
+        if (Object.keys(nodesMap).length === 0) return;
+
+        const graph = document.getElementById("graph");
+
+        // Calculate the bounding box of all nodes
+        let minX = Infinity,
+          minY = Infinity;
+        let maxX = -Infinity,
+          maxY = -Infinity;
+
+        // Check each node's position and size
+        Object.values(nodesMap).forEach((node) => {
+          const x = parseInt(node.style.left);
+          const y = parseInt(node.style.top);
+          const size = parseInt(node.dataset.size) || 60;
+
+          minX = Math.min(minX, x);
+          minY = Math.min(minY, y);
+          maxX = Math.max(maxX, x + size);
+          maxY = Math.max(maxY, y + size);
+        });
+
+        // Add padding around the nodes
+        const padding = 50;
+
+        // Calculate required container dimensions
+        const requiredWidth = maxX - minX + padding * 2;
+        const requiredHeight = maxY - minY + padding * 2;
+
+        // Set minimum size
+        const width = Math.max(600, requiredWidth);
+        const height = Math.max(400, requiredHeight);
+
+        // Update container size
+        graph.style.width = width + "px";
+        graph.style.height = height + "px";
+
+        // Reposition nodes to account for padding/minimum size adjustments
+        const xOffset = minX < padding ? padding - minX : 0;
+        const yOffset = minY < padding ? padding - minY : 0;
+
+        if (xOffset > 0 || yOffset > 0) {
+          Object.values(nodesMap).forEach((node) => {
+            const currentX = parseInt(node.style.left);
+            const currentY = parseInt(node.style.top);
+
+            node.style.left = currentX + xOffset + "px";
+            node.style.top = currentY + yOffset + "px";
+            node.dataset.x = currentX + xOffset;
+            node.dataset.y = currentY + yOffset;
+          });
+
+          // Update edge positions after moving nodes
+          updateEdges();
+        }
+      }
+
+      function makeDraggable(node, onMove) {
+        let offsetX, offsetY;
+
+        node.addEventListener("mousedown", (e) => {
+          e.preventDefault();
+          offsetX = e.clientX - node.offsetLeft;
+          offsetY = e.clientY - node.offsetTop;
+
+          function onMouseMove(e) {
+            const x = e.clientX - offsetX;
+            const y = e.clientY - offsetY;
+
+            node.style.left = x + "px";
+            node.style.top = y + "px";
+            node.dataset.x = x;
+            node.dataset.y = y;
+
+            onMove();
+          }
+
+          function onMouseUp() {
+            document.removeEventListener("mousemove", onMouseMove);
+            document.removeEventListener("mouseup", onMouseUp);
+
+            // Adjust container size when dragging ends
+            adjustContainerSize();
+          }
+
+          document.addEventListener("mousemove", onMouseMove);
+          document.addEventListener("mouseup", onMouseUp);
+        });
+      }
+
+      function connectNodes(nodeA, nodeB, edgeEl) {
+        const nodeSize = parseInt(nodeA.dataset.size) || 60; // Default to 60 if not set
+        const halfNodeSize = nodeSize / 2;
+
+        const x1 = parseInt(nodeA.dataset.x) + halfNodeSize;
+        const y1 = parseInt(nodeA.dataset.y) + halfNodeSize;
+        const x2 = parseInt(nodeB.dataset.x) + halfNodeSize;
+        const y2 = parseInt(nodeB.dataset.y) + halfNodeSize;
+
+        const length = Math.hypot(x2 - x1, y2 - y1);
+        const angle = (Math.atan2(y2 - y1, x2 - x1) * 180) / Math.PI;
+
+        edgeEl.style.width = length + "px";
+        edgeEl.style.left = x1 + "px";
+        edgeEl.style.top = y1 + "px";
+        edgeEl.style.transform = `rotate(${angle}deg)`;
+      }
+
+      function renderGraph(data) {
+        console.log("Rendering graph with data:", data);
+
+        // First clear the loading message
+        document.getElementById("details").innerHTML =
+          "<p>Graph loaded successfully. Click on a node to see details.</p>";
+
+        const graph = document.getElementById("graph");
+        graph.innerHTML = ""; // clear current nodes/edges
+
+        nodesMap = {};
+        edgesList = [];
+
+        // Calculate appropriate node size based on the number of nodes
+        const nodeCount = data.nodes.length;
+        // Dynamic sizing formula: starts at 60px for few nodes, scales down as node count increases
+        const nodeSize = Math.max(
+          10,
+          Math.min(60, Math.floor(600 / Math.sqrt(nodeCount)))
+        );
+        const halfNodeSize = nodeSize / 2;
+
+        console.log(
+          `Adjusting node size to ${nodeSize}px for ${nodeCount} nodes`
+        );
+
+        // Update the node color assignment code
+        data.nodes.forEach((nodeData) => {
+          const node = document.createElement("div");
+          node.className = "node";
+
+          // Apply dynamic size to each node
+          node.style.width = `${nodeSize}px`;
+          node.style.height = `${nodeSize}px`;
+
+          // Adjust font size based on node size
+          const fontSize = Math.max(8, Math.floor(nodeSize / 3));
+          node.style.fontSize = `${fontSize}px`;
+
+          // Get security level from the JSON data (defaulting to 1 if missing)
+          const securityLevel = parseInt(nodeData.security || 1);
+
+          // Add debug logging
+          console.log(`Node ${nodeData.id}: Security level = ${securityLevel}`);
+          
+          // Apply colors based on the security level
+          if (securityLevel === 3) {
+            node.style.background = "#ff4757"; // Red for security level 3
+            node.style.border = "2px solid #c0392b"; // Darker red border
+            node.classList.add("security-3");
+          } else if (securityLevel === 2) {
+            node.style.background = "#ffa502"; // Orange for security level 2
+            node.style.border = "2px solid #e67e22"; // Darker orange border
+            node.classList.add("security-2");
+          } else {
+            node.style.background = "#4a90e2"; // Default blue for security level 1
+            node.style.border = "2px solid #2980b9"; // Darker blue border
+            node.classList.add("security-1");
+          }
+
+          node.textContent = nodeData.label;
+          node.dataset.id = nodeData.id;
+          node.dataset.x = nodeData.x;
+          node.dataset.y = nodeData.y;
+          node.dataset.desc = nodeData.desc;
+          node.dataset.security = securityLevel; // Store security level explicitly
+          node.dataset.level = nodeData.level; // Store layout level (optional)
+          node.dataset.size = nodeSize;
+
+          node.style.left = nodeData.x + "px";
+          node.style.top = nodeData.y + "px";
+
+          node.setAttribute('hx-get', `/node/${nodeData.id}`);
+          node.setAttribute('hx-target', '#details');
+          node.setAttribute('hx-swap', 'innerHTML');
+          node.setAttribute('hx-trigger', 'click');
+
+          makeDraggable(node, updateEdges);
+
+          graph.appendChild(node);
+          nodesMap[nodeData.id] = node;
+        });
+
+        // Create edges
+        data.edges.forEach(({ from, to }) => {
+          const edge = document.createElement("div");
+          edge.className = "edge";
+          graph.appendChild(edge);
+          edgesList.push({ from, to, edge });
+        });
+
+        updateEdges();
+
+        // Adjust container size after nodes are created
+        adjustContainerSize();
+      }
+
+      function updateEdges() {
+        edgesList.forEach(({ from, to, edge }) => {
+          connectNodes(nodesMap[from], nodesMap[to], edge);
+        });
+      }
+
+      /*
+      document
+        .getElementById("jsonInput")
+        .addEventListener("change", async (e) => {
+          const file = e.target.files[0];
+          if (!file) return;
+
+          // Update the displayed filename
+          document.getElementById("fileName").textContent = file.name;
+
+          // Show loading indicator
+          document.getElementById("details").innerHTML =
+            "<p>Uploading and processing...</p>";
+
+          const formData = new FormData();
+          formData.append("jsonFile", file);
+
+          try {
+            console.log("Starting upload of file:", file.name);
+            const res = await fetch("/upload", {
+              method: "POST",
+              body: formData,
+            });
+
+            // Log the response for debugging
+            console.log("Server response status:", res.status);
+
+            if (!res.ok) {
+              let errorText = "Upload failed with status " + res.status;
+              try {
+                const error = await res.json();
+                errorText = error.error || errorText;
+              } catch (e) {
+                // If response isn't JSON
+                console.error("Error parsing error response:", e);
+              }
+
+              document.getElementById("details").innerHTML =
+                "<p>Upload failed</p>";
+              alert("Upload error: " + errorText);
+              return;
+            }
+
+            // Clone the response for logging
+            const resClone = res.clone();
+
+            try {
+              const graphData = await res.json();
+              console.log("Received graph data:", graphData);
+
+              // Validate the response
+              if (!graphData.nodes || graphData.nodes.length === 0) {
+                document.getElementById("details").innerHTML =
+                  "<p>No nodes found in the response</p>";
+                alert("No nodes found in the uploaded file.");
+                return;
+              }
+
+              // Render the graph
+              renderGraph(graphData);
+            } catch (parseError) {
+              console.error("JSON parsing error:", parseError);
+
+              // Debug: log the raw response
+              const rawText = await resClone.text();
+              console.log("Raw response:", rawText);
+
+              document.getElementById("details").innerHTML =
+                "<p>Invalid response from server</p>";
+              alert(
+                "Failed to parse server response. See console for details."
+              );
+            }
+          } catch (err) {
+            console.error("Upload failed:", err);
+            document.getElementById("details").innerHTML =
+              "<p>Connection failed</p>";
+            alert("Upload failed: " + err.message);
+          }
+        });
+      */
+    </script>
+  </body>
+</html>

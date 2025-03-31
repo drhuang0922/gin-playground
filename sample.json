@@ -1,0 +1,11 @@
+{
+    "nodes": [
+      { "id": "A", "label": "A", "x": 300, "y": 50, "desc": "Root node A" },
+      { "id": "B", "label": "B", "x": 150, "y": 200, "desc": "Left child B" },
+      { "id": "C", "label": "C", "x": 450, "y": 200, "desc": "Right child C" }
+    ],
+    "edges": [
+      { "from": "A", "to": "B" },
+      { "from": "A", "to": "C" }
+    ]
+}
