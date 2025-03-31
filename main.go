@@ -1,10 +1,14 @@
 package main
 
 import (
+	"embed"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"mime/multipart"
 	"net/http"
+	"os"
+	"html/template"
 
 	"github.com/gin-gonic/gin"
 )
@@ -19,6 +23,12 @@ type Node struct {
 	Security int    `json:"security"`
 	Level    int    `json:"level,omitempty"` // Used internally for layout, but will be included in JSON
 }
+
+//go:embed templates/*
+var templatesFS embed.FS
+
+//go:embed static/*
+var staticFS embed.FS
 
 type Edge struct {
 	From string `json:"from"`
@@ -305,8 +315,14 @@ func setupHtmxEndpoints(r *gin.Engine) {
 // Add this to your main() function
 func main() {
 	r := gin.Default()
-	r.LoadHTMLGlob("templates/*")
-	r.Static("/static", "./static")
+
+	// Setup templating engine with embedded files
+	templ := template.Must(template.New("").ParseFS(templatesFS, "templates/*"))
+	r.SetHTMLTemplate(templ)
+
+	// Setup static files from embedded filesystem
+	staticFiles, _ := fs.Sub(staticFS, "static")
+	r.StaticFS("/static", http.FS(staticFiles))
 
 	// Setup existing endpoints
 	r.GET("/", func(c *gin.Context) {
@@ -316,5 +332,11 @@ func main() {
 	// Setup HTMX-specific endpoints
 	setupHtmxEndpoints(r)
 
-	r.Run(":8080")
+	// Get port from environment or default to 8080
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	r.Run(":" + port)
 }
